@@ -1,0 +1,750 @@
+plugins {
+    id 'eclipse'
+    id 'idea'
+    id 'maven-publish'
+    id 'net.minecraftforge.gradle' version '[6.0,6.2)'
+}
+
+version = mod_version
+group = mod_group_id
+
+base {
+    archivesName = mod_id
+}
+
+// Mojang ships Java 17 to end users in 1.18+, so your mod should target Java 17.
+java.toolchain.languageVersion = JavaLanguageVersion.of(17)
+
+println "Java: ${System.getProperty 'java.version'}, JVM: ${System.getProperty 'java.vm.version'} (${System.getProperty 'java.vendor'}), Arch: ${System.getProperty 'os.arch'}"
+minecraft {
+    // The mappings can be changed at any time and must be in the following format.
+    // Channel:   Version:
+    // official   MCVersion             Official field/method names from Mojang mapping files
+    // parchment  YYYY.MM.DD-MCVersion  Open community-sourced parameter names and javadocs layered on top of official
+    //
+    // You must be aware of the Mojang license when using the 'official' or 'parchment' mappings.
+    // See more information here: https://github.com/MinecraftForge/MCPConfig/blob/master/Mojang.md
+    //
+    // Parchment is an unofficial project maintained by ParchmentMC, separate from MinecraftForge
+    // Additional setup is needed to use their mappings: https://parchmentmc.org/docs/getting-started
+    //
+    // Use non-default mappings at your own risk. They may not always work.
+    // Simply re-run your setup task after changing the mappings to update your workspace.
+    mappings channel: mapping_channel, version: mapping_version
+
+    // When true, this property will have all Eclipse/IntelliJ IDEA run configurations run the "prepareX" task for the given run configuration before launching the game.
+    // In most cases, it is not necessary to enable.
+    // enableEclipsePrepareRuns = true
+    // enableIdeaPrepareRuns = true
+
+    // This property allows configuring Gradle's ProcessResources task(s) to run on IDE output locations before launching the game.
+    // It is REQUIRED to be set to true for this template to function.
+    // See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
+    copyIdeResources = true
+
+    // When true, this property will add the folder name of all declared run configurations to generated IDE run configurations.
+    // The folder name can be set on a run configuration using the "folderName" property.
+    // By default, the folder name of a run configuration is the name of the Gradle project containing it.
+    // generateRunFolders = true
+
+    // This property enables access transformers for use in development.
+    // They will be applied to the Minecraft artifact.
+    // The access transformer file can be anywhere in the project.
+    // However, it must be at "META-INF/accesstransformer.cfg" in the final mod jar to be loaded by Forge.
+    // This default location is a best practice to automatically put the file in the right place in the final jar.
+    // See https://docs.minecraftforge.net/en/latest/advanced/accesstransformers/ for more information.
+    // accessTransformer = file('src/main/resources/META-INF/accesstransformer.cfg')
+
+    // Default run configurations.
+    // These can be tweaked, removed, or duplicated as needed.
+    runs {
+        // applies to all the run configs below
+        configureEach {
+            workingDirectory project.file('run')
+
+            // Recommended logging data for a userdev environment
+            // The markers can be added/remove as needed separated by commas.
+            // "SCAN": For mods scan.
+            // "REGISTRIES": For firing of registry events.
+            // "REGISTRYDUMP": For getting the contents of all registries.
+            property 'forge.logging.markers', 'REGISTRIES'
+
+            // Recommended logging level for the console
+            // You can set various levels here.
+            // Please read: https://stackoverflow.com/questions/2031163/when-to-use-the-different-log-levels
+            property 'forge.logging.console.level', 'debug'
+
+            mods {
+                "${mod_id}" {
+                    source sourceSets.main
+                }
+            }
+        }
+
+        client {
+            // Comma-separated list of namespaces to load gametests from. Empty = all namespaces.
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        server {
+            property 'forge.enabledGameTestNamespaces', mod_id
+            args '--nogui'
+        }
+
+        // This run config launches GameTestServer and runs all registered gametests, then exits.
+        // By default, the server will crash when no gametests are provided.
+        // The gametest system is also enabled by default for other run configs under the /test command.
+        gameTestServer {
+            property 'forge.enabledGameTestNamespaces', mod_id
+        }
+
+        data {
+            // example of overriding the workingDirectory set in configureEach above
+            workingDirectory project.file('run-data')
+
+            // Specify the modid for data generation, where to output the resulting resource, and where to look for existing resources.
+            args '--mod', mod_id, '--all', '--output', file('src/generated/resources/'), '--existing', file('src/main/resources/')
+        }
+    }
+}
+
+// Include resources generated by data generators.
+sourceSets.main.resources { srcDir 'src/generated/resources' }
+
+repositories {
+    // Put repositories for dependencies here
+    // ForgeGradle automatically adds the Forge maven and Maven Central for you
+
+    // If you have mod jar dependencies in ./libs, you can declare them as a repository like so.
+    // See https://docs.gradle.org/current/userguide/declaring_repositories.html#sub:flat_dir_resolver
+    flatDir {
+        dir 'libs'
+    }
+
+    // JEI Maven repository
+    maven {
+        name = "Progwml6's maven"
+        url = "https://dvs1.progwml6.com/files/maven/"
+    }
+    maven {
+        name = "Jared's maven"
+        url = "https://maven.blamejared.com/"
+    }
+    maven {
+        name = "ModMaven"
+        url = "https://modmaven.dev"
+    }
+}
+
+// ====================================================================================
+// 通用跨版本模组修补系统
+// ====================================================================================
+//
+// 【设计目标】
+//   将原本分散在 400+ 行代码中的 5 个模组修补逻辑统一到一个可配置函数中，
+//   在保持完全等效功能的同时，提高代码可维护性和可读性。
+//
+// 【支持的修补模式】
+//   1. REFMAP_ONLY    - 仅修补 refmap 文件（IMBlocker 模式）
+//   2. JSON_ALL       - 修补所有 JSON 文件中的 SRG 名（Blueprint/Atmospheric/Neapolitan 模式）
+//   3. CLASS_BYTECODE - Java 字节码级常量池修补（Pam's HarvestCraft 2 模式）
+//
+// 【与原代码的等效性保证】
+//   - 完全相同的 MCP 映射解析逻辑
+//   - 完全相同的文件遍历和替换策略
+//   - 完全相同的字节码解析和常量池处理
+//   - 完全相同的依赖注册方式
+// ====================================================================================
+
+/**
+ * 通用模组 JAR 修补函数
+ * 
+ * @param config 修补配置 Map，支持以下字段：
+ *   - modName: String          // 模组名称（用于日志和目录名）
+ *   - originalJar: String      // 原始 JAR 文件名（相对于 libs/）
+ *   - fixedVersion: String     // 修补后的版本号
+ *   - patchMode: String        // 修补模式：REFMAP_ONLY / JSON_ALL / CLASS_BYTECODE
+ *   - fieldMap: Map            // 仅 CLASS_BYTECODE 模式：字段名映射表（中间名 -> 语义名）
+ *   - isDependency: Boolean    // 是否注册为运行时依赖（默认 true）
+ * 
+ * @return 修补后的 JAR 文件路径（如果进行了修补）或原始 JAR 路径
+ */
+def patchModJar(Map config) {
+    // 参数默认值处理
+    def modName = config.modName
+    def originalJarName = config.originalJar
+    def fixedVersion = config.fixedVersion
+    def patchMode = config.patchMode ?: 'JSON_ALL'
+    def customFieldMap = config.fieldMap ?: [:]
+    def isDependency = config.isDependency != null ? config.isDependency : true
+    
+    // 路径计算
+    def originalJar = file("libs/${originalJarName}")
+    def fixedDir = file("${buildDir}/${modName.toLowerCase()}-fixed")
+    def fixedJarName = "${modName}Fixed-${fixedVersion}.jar"
+    def fixedJar = file("${fixedDir}/${fixedJarName}")
+    
+    // 如果原始 JAR 不存在，直接返回 null（不注册依赖）
+    if (!originalJar.exists()) {
+        logger.lifecycle("[Patch] ${modName}: Original JAR not found, skipping")
+        return null
+    }
+    
+    // MCP 映射文件路径（用于 SRG -> 官方名 转换）
+    def mappingZip = file("${project.gradle.gradleUserHomeDir}/caches/forge_gradle/mcp_repo/net/minecraft/mapping/${minecraft_version}/mapping-${minecraft_version}-mapping.zip")
+    
+    // 判断是否需要重新修补：
+    // 1. 补丁 JAR 不存在，或
+    // 2. 原始 JAR 比补丁 JAR 更新（说明原始文件被替换过）
+    def needsPatch = !fixedJar.exists() || originalJar.lastModified() > fixedJar.lastModified()
+    
+    if (needsPatch && mappingZip.exists()) {
+        fixedDir.mkdirs()
+        logger.lifecycle("[Patch] ${modName}: Patching ${patchMode} mode (SRG/intermediate -> official)...")
+        
+        // ================================================================================
+        // 步骤 1: 构建映射字典
+        // ================================================================================
+        // 根据修补模式构建不同的映射表：
+        // - REFMAP_ONLY / JSON_ALL: 从 MCP mapping.zip 解析 methods.csv 和 fields.csv
+        // - CLASS_BYTECODE: 使用用户提供的 fieldMap（中间名 -> 语义名）
+        // ================================================================================
+        
+        def nameMapping = [:]
+        
+        if (patchMode == 'CLASS_BYTECODE') {
+            // Pam's HarvestCraft 2 模式：使用预定义的字段映射表
+            // 来源：build/createMcpToSrg/output.tsrg 中搜索对应 f_xxxxx_ 得到的语义名
+            nameMapping.putAll(customFieldMap)
+            logger.lifecycle("[Patch] ${modName}: Using ${nameMapping.size()} field mappings")
+        } else {
+            // IMBlocker / Blueprint / Atmospheric / Neapolitan 模式：
+            // 从 ForgeGradle 缓存的 MCP 映射中提取 SRG -> 官方的对应关系
+            // mapping.zip 包含：
+            //   - methods.csv: "SRG方法名,官方方法名,描述符,类名"
+            //   - fields.csv:  "SRG字段名,官方字段名,描述符,类名"
+            new java.util.zip.ZipFile(mappingZip).withCloseable { zip ->
+                ['methods.csv', 'fields.csv'].each { csvName ->
+                    def entry = zip.getEntry(csvName)
+                    if (entry != null) {
+                        zip.getInputStream(entry).eachLine('UTF-8') { line ->
+                            def parts = line.split(',')
+                            if (parts.length >= 2) {
+                                nameMapping[parts[0].trim()] = parts[1].trim()
+                            }
+                        }
+                    }
+                }
+            }
+            logger.lifecycle("[Patch] ${modName}: Loaded ${nameMapping.size()} SRG mappings from MCP")
+        }
+        
+        // ================================================================================
+        // 步骤 2: 执行 JAR 修补
+        // ================================================================================
+        
+        def baos = new ByteArrayOutputStream()
+        def jarFile = new java.util.jar.JarFile(originalJar)
+        def jarOutput = new java.util.jar.JarOutputStream(baos)
+        def totalReplacements = 0
+        
+        jarFile.entries().each { entry ->
+            jarOutput.putNextEntry(new java.util.jar.JarEntry(entry.name))
+            def data = jarFile.getInputStream(entry).readAllBytes()
+            
+            // 根据修补模式选择不同的处理逻辑
+            switch (patchMode) {
+                case 'REFMAP_ONLY':
+                    // ====================================================================
+                    // IMBlocker 修补模式：仅处理 refmap 文件
+                    // ====================================================================
+                    // 【问题】IMBlocker 是跨版本模组（1.19.4-1.20.4），其 mixin refmap 中使用
+                    //   SRG 混淆名（如 m_1234_），但 1.20.1 Forge 开发环境使用官方映射（mojmap），
+                    //   方法名为语义名称，导致 Mixin 注入失败。
+                    // 【方案】匹配 ";SRG名(" 模式（方法调用签名），替换为 ";官方名("
+                    // ====================================================================
+                    if (entry.name.contains('refmap')) {
+                        def text = new String(data, 'UTF-8')
+                        def replacements = 0
+                        nameMapping.each { srg, official ->
+                            // 匹配方法调用签名：";SRG名("
+                            def pattern = ";${srg}("
+                            def replacement = ";${official}("
+                            if (text.contains(pattern)) {
+                                text = text.replace(pattern, replacement)
+                                replacements++
+                            }
+                        }
+                        if (replacements > 0) {
+                            data = text.getBytes('UTF-8')
+                            totalReplacements += replacements
+                            logger.lifecycle("[Patch] ${modName}:  ${entry.name}: ${replacements} replacements")
+                        }
+                    }
+                    break
+                    
+                case 'JSON_ALL':
+                    // ====================================================================
+                    // Blueprint / Atmospheric / Neapolitan 修补模式：处理所有 JSON 文件
+                    // ====================================================================
+                    // 【问题】这些模组虽然版本标注 1.20.1，但内部 mixin refmap 和 JSON 配置文件
+                    //   使用 SRG 方法名（m_xxxx_）和字段名（f_xxxx_），与 mojmap 运行时不兼容。
+                    // 【方案】与 IMBlocker 类似，但修补范围扩展到所有 .json 文件。
+                    //   使用高效策略：先提取文件中实际存在的 SRG 名集合，再逐一替换，
+                    //   避免遍历 3 万+映射导致的严重卡顿。
+                    // ====================================================================
+                    if (entry.name.endsWith('.json') || entry.name.contains('refmap')) {
+                        def text = new String(data, 'UTF-8')
+                        
+                        // 高效策略：正则提取当前文件中实际出现的 SRG 方法名(m_xxxx_)和字段名(f_xxxx_)
+                        def srgPattern = java.util.regex.Pattern.compile('([mf]_[a-zA-Z0-9_]+)')
+                        def matcher = srgPattern.matcher(text)
+                        def foundSrgs = new LinkedHashSet<String>()
+                        while (matcher.find()) {
+                            foundSrgs.add(matcher.group(1))
+                        }
+                        
+                        // 按长度降序排列（防止短名错误替换长名的一部分）
+                        if (!foundSrgs.isEmpty()) {
+                            def sortedSrgs = foundSrgs.toList().sort { a, b -> b.length() <=> a.length() }
+                            def replacements = 0
+                            sortedSrgs.each { srg ->
+                                if (nameMapping.containsKey(srg)) {
+                                    def official = nameMapping[srg]
+                                    // 使用简单的字符串替换，避免正则问题
+                                    text = text.replace(srg, official)
+                                    replacements++
+                                }
+                            }
+                            if (replacements > 0) {
+                                data = text.getBytes('UTF-8')
+                                totalReplacements += replacements
+                                logger.lifecycle("[Patch] ${modName}:  ${entry.name}: ${replacements} replacements")
+                            }
+                        }
+                    }
+                    break
+                    
+                case 'CLASS_BYTECODE':
+                    // ====================================================================
+                    // Pam's HarvestCraft 2 修补模式：Java Class 字节码级常量池修补
+                    // ====================================================================
+                    // 【问题背景】
+                    //   Pam HC2 Crops 和 Food Core 模组是用 Minecraft 1.20.4 Forge MDK 编译的，
+                    //   而本项目运行在 1.20.1 环境下。两个版本的字段命名方案不同：
+                    //     - 1.20.4 Forge 使用 "中间名称" (intermediate names)，格式为 f_xxxxx_
+                    //     - 1.20.1 Forge 开发环境运行时使用 Mojang 官方映射 (mojmap)，字段名为语义名称
+                    //   当 Pam 模组的字节码引用 f_279569_ 时，1.20.1 运行时会在 Minecraft 类中查找
+                    //   同名字段，但实际上该字段在 1.20.1 中叫 CREATIVE_MODE_TAB（mojmap 语义名），
+                    //   从而导致 java.lang.NoSuchFieldError 崩溃。
+                    //
+                    // 【解决方案】
+                    //   1. 从 ForgeGradle 生成的 1.20.1 TSRG 映射文件中提取字段对应关系：
+                    //      - TSRG 格式: 语义名 -> 中间名 (例如: CREATIVE_MODE_TAB f_279569_)
+                    //      - 通过查找 pamhc2foodcore 崩溃日志中提到的字段名，反向得到语义名
+                    //   2. 在 Gradle 构建时自动修补 Pam JAR：解析 Java class 文件常量池，
+                    //      将 UTF-8 字符串入口中的 f_xxxxx_ 替换为对应的 mojmap 语义名
+                    //   3. 使用修补后的 JAR 作为依赖，fg.deobf() 处理后续反混淆
+                    //
+                    // 【重要说明】
+                    //   此模式仅替换常量池中的 UTF-8 字符串，不修改常量池计数。
+                    //   因为替换前后都是 1 个 UTF-8 条目，只是内容长度变化，
+                    //   所以常量池计数保持不变。
+                    // ====================================================================
+                    if (entry.name.endsWith('.class')) {
+                        // 验证 Java class 文件魔数 (0xCAFEBABE)
+                        if (data.length >= 10 && 
+                            data[0] == (byte)0xCA && data[1] == (byte)0xFE &&
+                            data[2] == (byte)0xBA && data[3] == (byte)0xBE) {
+                            
+                            def cpCount = ((data[8] & 0xFF) << 8) | (data[9] & 0xFF)
+                            def result = new ByteArrayOutputStream()
+                            // 先写入魔数和版本号（8字节），常量池计数稍后更新
+                            result.write(data, 0, 8)
+                            def offset = 10
+                            def cpIndex = 1
+                            def replacements = 0
+                            def constantPoolData = new ByteArrayOutputStream()
+                            
+                            while (cpIndex < cpCount && offset < data.length) {
+                                def tag = data[offset] & 0xFF
+                                offset++
+                                
+                                if (tag == 1) { 
+                                    // UTF-8 字符串入口 — 这是我们需要修补的地方
+                                    def strLen = ((data[offset] & 0xFF) << 8) | (data[offset+1] & 0xFF)
+                                    def strData = new String(data, offset+2, strLen, 'UTF-8')
+                                    
+                                    if (nameMapping.containsKey(strData)) {
+                                        // 找到匹配字段，替换为语义名
+                                        def newStr = nameMapping[strData]
+                                        def newBytes = newStr.getBytes('UTF-8')
+                                        constantPoolData.write(tag)                                     // tag=1
+                                        constantPoolData.write((newBytes.length >> 8) & 0xFF)           // 新长度高位
+                                        constantPoolData.write(newBytes.length & 0xFF)                  // 新长度低位
+                                        constantPoolData.write(newBytes)                                // 新字符串内容
+                                        replacements++
+                                    } else {
+                                        // 不匹配，原样复制
+                                        constantPoolData.write(tag)
+                                        constantPoolData.write(data, offset, 2 + strLen)
+                                    }
+                                    offset += 2 + strLen
+                                    
+                                } else if (tag == 7 || tag == 8 || tag == 16) {
+                                    // Class, String, MethodType — 各含 2 字节索引
+                                    constantPoolData.write(tag)
+                                    constantPoolData.write(data, offset, 2)
+                                    offset += 2
+                                    
+                                } else if (tag == 3 || tag == 4) {
+                                    // Integer, Float — 各含 4 字节数据
+                                    constantPoolData.write(tag)
+                                    constantPoolData.write(data, offset, 4)
+                                    offset += 4
+                                    
+                                } else if (tag == 5 || tag == 6) {
+                                    // Long, Double — 各含 8 字节数据，占两个常量池索引
+                                    constantPoolData.write(tag)
+                                    constantPoolData.write(data, offset, 8)
+                                    offset += 8
+                                    cpIndex++  // 额外占一个索引位
+                                    
+                                } else if (tag == 9 || tag == 10 || tag == 11 || tag == 12) {
+                                    // Fieldref, Methodref, InterfaceMethodref, NameAndType — 各含 4 字节
+                                    constantPoolData.write(tag)
+                                    constantPoolData.write(data, offset, 4)
+                                    offset += 4
+                                    
+                                } else if (tag == 15) {
+                                    // MethodHandle — 3 字节
+                                    constantPoolData.write(tag)
+                                    constantPoolData.write(data, offset, 3)
+                                    offset += 3
+                                    
+                                } else if (tag == 18) {
+                                    // InvokeDynamic — 4 字节
+                                    constantPoolData.write(tag)
+                                    constantPoolData.write(data, offset, 4)
+                                    offset += 4
+                                    
+                                } else {
+                                    // 未知 tag，停止解析（避免损坏文件）
+                                    constantPoolData.write(tag)
+                                    break
+                                }
+                                cpIndex++
+                            }
+                            
+                            // 写入常量池计数（不变）
+                            result.write((cpCount >> 8) & 0xFF)
+                            result.write(cpCount & 0xFF)
+                            // 写入常量池数据
+                            result.write(constantPoolData.toByteArray())
+                            // 复制常量池之后的剩余数据（访问标志、类信息、属性等）
+                            if (offset < data.length) {
+                                result.write(data, offset, data.length - offset)
+                            }
+                            
+                            if (replacements > 0) {
+                                logger.lifecycle("[Patch] ${modName}:  ${entry.name}: ${replacements} replacements")
+                                totalReplacements += replacements
+                            }
+                            data = result.toByteArray()
+                        }
+                    }
+                    break
+            }
+            
+            jarOutput.write(data)
+            jarOutput.closeEntry()
+        }
+        
+        jarFile.close()
+        jarOutput.close()
+        fixedJar.bytes = baos.toByteArray()
+        logger.lifecycle("[Patch] ${modName}: Total ${totalReplacements} replacements -> ${fixedJar}")
+    }
+    
+    // ================================================================================
+    // 步骤 3: 注册为依赖
+    // ================================================================================
+    // 注意：依赖注册需要在 dependencies {} 块中完成，这里只返回修补后的 JAR 信息
+    // 调用方需要在 dependencies 块中手动添加 runtimeOnly 依赖
+    // ================================================================================
+    
+    return [jar: fixedJar, dir: fixedDir, name: "${modName}Fixed", version: fixedVersion, registered: isDependency]
+}
+
+// ====================================================================================
+// 跨版本模组依赖配置
+// ====================================================================================
+// 由于需要在 dependencies 块中注册依赖，同时又要执行 JAR 修补，
+// 我们采用以下策略：
+//   1. 在 dependencies 块外部先执行所有修补操作
+//   2. 收集需要添加的 flatDir 仓库和依赖信息
+//   3. 在 dependencies 块内统一注册
+// ====================================================================================
+
+// 字段名映射表：1.20.4 中间名 -> 1.20.1 Mojmap 语义名
+// 来源：build/createMcpToSrg/output.tsrg 中搜索对应 f_xxxxx_ 得到的语义名
+def pamFieldMap = [
+    'f_279569_': 'CREATIVE_MODE_TAB',    // net.minecraft.core.registries.Registries
+    'f_256797_': 'COMBAT',               // net.minecraft.world.item.CreativeModeTabs
+    'f_118259_': 'LOCATION_BLOCKS',      // net.minecraft.client.renderer.texture.TextureAtlas
+    'f_256911_': 'CONFIGURED_FEATURE',   // net.minecraft.core.registries.Registries
+    'f_256988_': 'PLACED_FEATURE',       // net.minecraft.core.registries.Registries
+    'f_13029_': 'SAND',                  // net.minecraft.tags.BlockTags
+    'f_144274_': 'DIRT',                 // net.minecraft.tags.BlockTags
+    'f_151079_': 'GLOW_BERRIES',         // net.minecraft.world.item.Items
+    'f_195352_': 'HEIGHTMAP',            // net.minecraft.data.worldgen.placement.PlacementUtils
+    'f_21345_': 'goalSelector',          // net.minecraft.world.entity.Mob
+    'f_42028_': 'MELON',                 // net.minecraft.world.item.Items
+    'f_42780_': 'SWEET_BERRIES',         // net.minecraft.world.item.Items
+    'f_50092_': 'WHEAT',                 // net.minecraft.world.level.block.Blocks
+    'f_51914_': 'COMPOSTABLES',          // net.minecraft.world.level.block.ComposterBlock
+    'f_61409_': 'AGE_7',                 // net.minecraft.world.level.block.state.properties.BlockStateProperties
+    'f_65741_': 'SIMPLE_BLOCK',          // net.minecraft.world.level.levelgen.feature.Feature
+    'f_65763_': 'RANDOM_PATCH',          // net.minecraft.world.level.levelgen.feature.Feature
+    // Pam's HarvestCraft 2 Trees 额外需要的字段映射
+    // 注意：pamhc2trees 是用 1.20.4 编译的，其使用的中间名与 1.20.1 不同
+    'f_256905_': 'FOLIAGE_PLACER_TYPE',  // net.minecraft.core.registries.Registries
+    'f_49999_': 'OAK_LOG',               // net.minecraft.world.level.block.Blocks (1.20.4中间名->1.20.1语义名)
+    'f_50000_': 'SPRUCE_LOG',            // net.minecraft.world.level.block.Blocks
+    'f_50002_': 'JUNGLE_LOG',            // net.minecraft.world.level.block.Blocks
+    'f_50050_': 'OAK_LEAVES',            // net.minecraft.world.level.block.Blocks
+    'f_50051_': 'SPRUCE_LEAVES',         // net.minecraft.world.level.block.Blocks
+    'f_50053_': 'JUNGLE_LEAVES',         // net.minecraft.world.level.block.Blocks
+    'f_56736_': 'WOOD',                  // net.minecraft.world.level.block.SoundType
+    'f_56740_': 'GRASS',                 // net.minecraft.world.level.block.SoundType
+    'f_56758_': 'CROP',                  // net.minecraft.world.level.block.SoundType
+    'f_61362_': 'WATERLOGGED',           // net.minecraft.world.level.block.state.properties.BlockStateProperties
+    'f_65760_': 'TREE',                  // net.minecraft.world.level.levelgen.feature.Feature
+]
+
+// 收集所有需要修补的模组配置
+def patchConfigs = [
+    // ------------------------------------------------------------------------
+    // IMBlocker (跨版本 Mixin Refmap 修补)
+    // ------------------------------------------------------------------------
+    // 【问题】IMBlocker 是跨版本模组（1.19.4-1.20.4），其 mixin refmap 中使用
+    //   SRG 混淆名（如 m_1234_），但 1.20.1 Forge 开发环境使用官方映射（mojmap），
+    //   方法名为语义名称，导致 Mixin 注入失败。
+    // 【修补模式】REFMAP_ONLY - 仅修补 refmap 文件中的方法签名
+    // ------------------------------------------------------------------------
+    [modName: 'IMBlocker', originalJar: 'IMBlocker-5.0.2-1.19.4-1.20.4.jar', fixedVersion: '5.0.2-1.20.1-fixed', patchMode: 'REFMAP_ONLY'],
+    
+    // ------------------------------------------------------------------------
+    // Blueprint (必须前置 — 跨版本 Mixin Refmap 修补)
+    // ------------------------------------------------------------------------
+    // 【问题】Blueprint 是 TeamAbnormals 模组的通用前置，虽然版本标注 1.20.1，
+    //   但内部 mixin refmap 使用 SRG 方法名（m_xxxx_），与 mojmap 运行时不兼容。
+    //   此外 JSON 配置文件中也可能包含 SRG 名。
+    // 【修补模式】JSON_ALL - 修补所有 JSON 文件中的 SRG 名
+    // ------------------------------------------------------------------------
+    [modName: 'Blueprint', originalJar: 'blueprint-1.20.1-7.1.3.jar', fixedVersion: '7.1.3-fixed', patchMode: 'JSON_ALL'],
+    
+    // ------------------------------------------------------------------------
+    // Atmospheric (必须前置 — 跨版本 Mixin Refmap 修补)
+    // ------------------------------------------------------------------------
+    // 【问题】Atmospheric 是 Neapolitan 的前置模组，使用 Blueprint 框架，
+    //   同样存在 SRG→mojmap 的混淆名不匹配问题。
+    // 【修补模式】JSON_ALL - 与 Blueprint 相同的修补逻辑
+    // ------------------------------------------------------------------------
+    [modName: 'Atmospheric', originalJar: 'atmospheric-1.20.1-6.1.1.jar', fixedVersion: '6.1.1-fixed', patchMode: 'JSON_ALL'],
+    
+    // ------------------------------------------------------------------------
+    // Neapolitan (必须前置 — 跨版本 Mixin Refmap 修补)
+    // ------------------------------------------------------------------------
+    // 【问题】Neapolitan 是提供香蕉等物品的模组，依赖 Blueprint 框架，
+    //   同样存在 SRG→mojmap 的混淆名不匹配问题。
+    // 【修补模式】JSON_ALL - 与 Blueprint/Atmospheric 相同的修补逻辑
+    // ------------------------------------------------------------------------
+    [modName: 'Neapolitan', originalJar: 'neapolitan-1.20.1-5.1.0.jar', fixedVersion: '5.1.0-fixed', patchMode: 'JSON_ALL'],
+    
+    // ------------------------------------------------------------------------
+    // Pam's HarvestCraft 2 - Food Core (跨版本兼容修补)
+    // ------------------------------------------------------------------------
+    // 【问题背景】Pam HC2 是用 1.20.4 Forge MDK 编译的，使用中间名 f_xxxxx_
+    // 【修补模式】CLASS_BYTECODE - Java 字节码级常量池修补
+    // ------------------------------------------------------------------------
+    [modName: 'PamHC2FoodCore', originalJar: 'pamhc2foodcore-1.20.4-1.0.5.jar', fixedVersion: '1.20.4-1.0.5-patched', patchMode: 'CLASS_BYTECODE', fieldMap: pamFieldMap],
+    
+    // ------------------------------------------------------------------------
+    // Pam's HarvestCraft 2 - Crops (跨版本兼容修补)
+    // ------------------------------------------------------------------------
+    [modName: 'PamHC2Crops', originalJar: 'pamhc2crops-1.20-1.0.3.jar', fixedVersion: '1.20-1.0.3-patched', patchMode: 'CLASS_BYTECODE', fieldMap: pamFieldMap],
+    
+    // ------------------------------------------------------------------------
+    // Pam's HarvestCraft 2 - Trees (跨版本兼容修补)
+    // ------------------------------------------------------------------------
+    // 【问题背景】Pam HC2 Trees 是用 1.20.4 Forge MDK 编译的，使用中间名 f_xxxxx_
+    // 【修补模式】CLASS_BYTECODE - Java 字节码级常量池修补
+    // ------------------------------------------------------------------------
+    [modName: 'PamHC2Trees', originalJar: 'pamhc2trees-1.20-1.0.2.jar', fixedVersion: '1.20-1.0.2-patched', patchMode: 'CLASS_BYTECODE', fieldMap: pamFieldMap],
+]
+
+// 执行所有修补并收集依赖信息
+def patchedMods = []
+patchConfigs.each { config ->
+    def result = patchModJar(config)
+    if (result != null && result.jar.exists()) {
+        patchedMods.add(result)
+        logger.lifecycle("[Patch] Registered ${result.name}:${result.version} from ${result.dir}")
+    }
+}
+
+dependencies {
+    // Specify the version of Minecraft to use.
+    // Any artifact can be supplied so long as it has a "userdev" classifier artifact and is a compatible patcher artifact.
+    // The "userdev" classifier will be requested and setup by ForgeGradle.
+    // If the group id is "net.minecraft" and the artifact id is one of ["client", "server", "joined"],
+    // then special handling is done to allow a setup of a vanilla dependency without the use of an external repository.
+    minecraft "net.minecraftforge:forge:${minecraft_version}-${forge_version}"
+
+    // ====================================================================================
+    // 注册修补后的跨版本模组依赖
+    // ====================================================================================
+    // 为每个成功修补的模组添加 flatDir 仓库和 runtimeOnly 依赖
+    // ====================================================================================
+    patchedMods.each { mod ->
+        // 动态添加 flatDir 仓库
+        repositories.flatDir { dirs mod.dir }
+        // 添加运行时依赖
+        runtimeOnly fg.deobf("blank:${mod.name}:${mod.version}")
+        logger.lifecycle("[Dependencies] Added runtimeOnly: blank:${mod.name}:${mod.version}")
+    }
+
+    // Example mod dependency using a mod jar from ./libs with a flat dir repository
+    // This maps to ./libs/coolmod-${mc_version}-${coolmod_version}.jar
+    // The group id is ignored when searching -- in this case, it is "blank"
+    // implementation fg.deobf("blank:coolmod-${mc_version}:${coolmod_version}")
+
+    // JEI - Just Enough Items (optional dependency for development)
+    compileOnly(fg.deobf("mezz.jei:jei-${minecraft_version}-common-api:15.19.0.84"))
+    compileOnly(fg.deobf("mezz.jei:jei-${minecraft_version}-forge-api:15.19.0.84"))
+    runtimeOnly(fg.deobf("mezz.jei:jei-${minecraft_version}-forge:15.19.0.84"))
+
+    // For more info:
+    // http://www.gradle.org/docs/current/userguide/artifact_dependencies_tutorial.html
+    // http://www.gradle.org/docs/current/userguide/dependency_management.html
+}
+
+// This block of code expands all declared replace properties in the specified resource targets.
+// A missing property will result in an error. Properties are expanded using ${} Groovy notation.
+// When "copyIdeResources" is enabled, this will also run before the game launches in IDE environments.
+// See https://docs.gradle.org/current/dsl/org.gradle.language.jvm.tasks.ProcessResources.html
+tasks.named('processResources', ProcessResources).configure {
+    var replaceProperties = [
+            minecraft_version: minecraft_version, minecraft_version_range: minecraft_version_range,
+            forge_version: forge_version, forge_version_range: forge_version_range,
+            loader_version_range: loader_version_range,
+            mod_id: mod_id, mod_name: mod_name, mod_license: mod_license, mod_version: mod_version,
+            mod_authors: mod_authors, mod_description: mod_description,
+    ]
+    inputs.properties replaceProperties
+
+    filesMatching(['META-INF/mods.toml', 'pack.mcmeta']) {
+        expand replaceProperties + [project: project]
+    }
+}
+
+// Example for how to get properties into the manifest for reading at runtime.
+tasks.named('jar', Jar).configure {
+    manifest {
+        attributes([
+                'Specification-Title'     : mod_id,
+                'Specification-Vendor'    : mod_authors,
+                'Specification-Version'   : '1', // We are version 1 of ourselves
+                'Implementation-Title'    : project.name,
+                'Implementation-Version'  : project.jar.archiveVersion,
+                'Implementation-Vendor'   : mod_authors,
+                'Implementation-Timestamp': new Date().format("yyyy-MM-dd'T'HH:mm:ssZ")
+        ])
+    }
+
+    // This is the preferred method to reobfuscate your jar file
+    finalizedBy 'reobfJar'
+}
+
+// However if you are in a multi-project build, dev time needs unobfed jar files, so you can delay the obfuscation until publishing by doing:
+// tasks.named('publish').configure {
+//     dependsOn 'reobfJar'
+// }
+
+// Example configuration to allow publishing using the maven-publish plugin
+publishing {
+    publications {
+        register('mavenJava', MavenPublication) {
+            artifact jar
+        }
+    }
+    repositories {
+        maven {
+            url "file://${project.projectDir}/mcmodsrepo"
+        }
+    }
+}
+
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8' // Use the UTF-8 charset for Java compilation
+}
+
+// ====================================================================================
+// 手动修补任务 - 用于强制重新生成修补后的 JAR
+// ====================================================================================
+// 这些任务允许开发者在需要时手动重新执行特定模组的修补过程，
+// 例如当 MCP 映射更新或需要调试修补逻辑时。
+// ====================================================================================
+
+// Regenerate the fixed IMBlocker JAR manually: gradlew fixImblockerRefmap
+tasks.register('fixImblockerRefmap') {
+    doLast {
+        logger.lifecycle('Manually patching IMBlocker...')
+        patchModJar(
+            modName: 'IMBlocker',
+            originalJar: 'IMBlocker-5.0.2-1.19.4-1.20.4.jar',
+            fixedVersion: '5.0.2-1.20.1-fixed',
+            patchMode: 'REFMAP_ONLY'
+        )
+    }
+}
+
+// Fix Blueprint refmap & JSON configs: gradlew fixBlueprintRefmap
+tasks.register('fixBlueprintRefmap') {
+    doLast {
+        logger.lifecycle('Manually patching Blueprint...')
+        patchModJar(
+            modName: 'Blueprint',
+            originalJar: 'blueprint-1.20.1-7.1.3.jar',
+            fixedVersion: '7.1.3-fixed',
+            patchMode: 'JSON_ALL'
+        )
+    }
+}
+
+// Fix Atmospheric refmap & JSON configs: gradlew fixAtmosphericRefmap
+tasks.register('fixAtmosphericRefmap') {
+    doLast {
+        logger.lifecycle('Manually patching Atmospheric...')
+        patchModJar(
+            modName: 'Atmospheric',
+            originalJar: 'atmospheric-1.20.1-6.1.1.jar',
+            fixedVersion: '6.1.1-fixed',
+            patchMode: 'JSON_ALL'
+        )
+    }
+}
+
+// Fix all refmaps at once: gradlew fixAllRefmaps
+tasks.register('fixAllRefmaps') {
+    doLast {
+        logger.lifecycle('Fixing all refmaps (SRG -> official)...')
+        tasks.findByName('fixImblockerRefmap')?.actions?.each { it.execute() }
+        tasks.findByName('fixBlueprintRefmap')?.actions?.each { it.execute() }
+        tasks.findByName('fixAtmosphericRefmap')?.actions?.each { it.execute() }
+        logger.lifecycle('All refmaps patched successfully!')
+    }
+}
+
+// Example configuration for reobf
